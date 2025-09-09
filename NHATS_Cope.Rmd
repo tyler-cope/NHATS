@@ -1,0 +1,667 @@
+---
+title: "NHATS Financial Strain and Dementia Study"
+subtitle: "Data Cleaning, Cohort Construction, and Descriptive Analyses"
+author: "Tyler Cope"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    theme: cosmo
+    number_sections: false
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE)
+```
+
+## 📄 Project Ovierview 
+
+This report details the process of constructing an analytic dataset from the National Health and Aging Trends Study (NHATS) to examine the relationship between **financial strain** and **dementia classification**. Data were drawn from Rounds 1, 5, 6, and 7 of NHATS and harmonized to build a clean, merged dataset suitable for analysis. We restricted the cohort to sample-person respondents living in the community, excluding those in nursing homes, assisted living facilities, or other institutions.  
+
+Round 6 served as the anchor wave because it contained the study’s primary exposure variable, **Financial Strain**, derived from four items about whether participants skipped meals or struggled to pay for rent, utilities, or medical care. Participants were coded as *Any Strain* if they endorsed any “Yes,” *No Strain* only if they answered “No” to all four items, and *Missing* if any response was refused, unknown, or inapplicable in the absence of any financial strain flag. 
+
+Round 7 provided the study’s primary outcome, **dementia classification**, combining clinician diagnosis with cognitive testing. Participants were classified as *Probable Dementia* if a diagnosis was confirmed, *Possible Dementia* if ≥2 cognitive domains (memory, orientation, executive function) were impaired, *No Dementia* if dementia was ruled out and all domains were intact, or *Missing* if classification was not possible.  
+
+To support covariate completeness, demographic and socioeconomic data were merged from Rounds 1 and 5, with Round 5 values prioritized and Round 1 used to backfill missing values. The resulting *FullData* dataset retained all Round 6 participants, preserving expected structural missingness from other waves. From this, an analysis dataset called *CleanData* was created by excluding anyone missing either the exposure or outcome, while retaining explicit “Missing” categories for other covariates to ensure transparency in descriptive analyses and reporting.
+
+
+---
+
+```{r} 
+# --- Load Libraries ---
+library(tidyverse)   # Data wrangling
+library(haven)       # Read SAS files
+library(janitor)     # Clean variable names
+library(skimr)       # Data inspection
+library(arsenal)    # For beautiful Table 1s
+library(Hmisc)       # for label()
+```
+
+```{r, echo = FALSE} 
+# --- Set Working Directory ---
+setwd("C:/Users/tlc74/OneDrive - Duke University/1) Tyler/PhD/Data Cleaning Course/Data_cleaning_class/NHATS Data")
+```
+
+
+## 🛠 Helper Definitions
+
+Before I started cleaning NHATS data, I defined a few **helper objects and functions** to standardize how I handled missing data codes and factors across the dataset.  
+
+- First, I created vectors for NHATS missing data codes (e.g., `-1`, `-7`) and their labels.  
+- Next, I set up a standard Yes/No structure that I reuse for multiple variables.  
+- Finally, I wrote a **helper function** `safe_collapse()` that will safely collapse all the special missing codes into one single **"Missing"** level for any factor variable. 
+
+```{r}
+# Missing data codes used across NHATS
+special_missing_levels <- c("-1", "-7", "-8", "-9")
+special_missing_labels <- c("Inapplicable", "Refused", "Don’t know", "Missing")
+
+# Common Yes/No structure across NHATS
+yes_no_levels <- c("1", "2", special_missing_levels)
+yes_no_labels <- c("Yes", "No", special_missing_labels)
+
+# Convert special missing codes to numeric for case_when logic
+special_missing_numeric <- as.numeric(special_missing_levels)
+
+# 🛠 Helper: Collapse special missing levels into a single “Missing” factor level.
+safe_collapse <- function(x, missing_levels = special_missing_labels) {
+  if (!is.factor(x)) {
+    return(x) # Do not attempt to collapse if it's not a factor
+  }
+  valid <- intersect(levels(x), missing_levels)
+  if (length(valid) > 0) {
+    x |> fct_collapse(Missing = valid) |> fct_explicit_na("Missing")
+  } else {
+    x |> fct_explicit_na("Missing")
+  }
+}
+```
+
+
+## 🧹 Cleaning Round 1 Data (R1)
+
+At this stage of the project, I was focused on **cleaning up Round 1 (R1) and Round 5 (R5)**, which would ultimately provide the **covariates** for my analysis.  
+R1’s role here wasn’t to stand alone — it was really meant to **supplement R5** where R5 was incomplete. More coming soon here.
+
+Specifically, for R1, I:
+- Imported the **Round 1 SP file** from NHATS.  
+- Selected only the **key variables** I knew I would need for covariates.  
+- Filtered down to **sample-person respondents living at home**, because those are the cases relevant for my analysis.  
+- Renamed variables to have clearer, more intuitive names for later merging.  
+- Converted household size and income to numeric values.  
+- Simplified **occupation codes** into 6 buckets and converted several fields into **factors**
+- Converted **-1** *inapplicable* values from **Section 8 Housing** variable as *no* due to skip logic to reduce missing data for this variable. 
+ 
+
+``` {r}
+R1_SP <- read_sas("NHATS_Round_1_SP_File.sas7bdat")
+
+
+R1_SP_clean <- R1_SP |>
+
+# Selecting the variables of interest
+  select(
+    spid, is1resptype, r1dresid, r1d2intvrage, r1dgender, el1higstschl,
+    lf1doccpctgy, lf1occupaton, hp1ownrentot, lf1workfpay, hp1sec8pubsn,
+    ip1cmedicaid, ew1progneed1, ew1progneed2, ew1progneed3, el1hlthchild,
+    ia1totinc, hh1dhshldnum, rl1dracehisp
+  ) |>
+  
+# Filtering to sample-person responders living at home
+  filter(is1resptype == 1 & r1dresid == 1) |>   
+  
+# Renaming variables 
+  rename(
+    Responder1 = is1resptype,
+    Residential1 = r1dresid,
+    Age1 = r1d2intvrage,
+    Gender1 = r1dgender,
+    Education1 = el1higstschl,
+    Occupation1 = lf1doccpctgy,
+    EverWorked1 = lf1occupaton,
+    HomeOwnership1 = hp1ownrentot,
+    HouseholdSize1 = hh1dhshldnum,
+    HouseholdIncome1 = ia1totinc,
+    RetirementStatus1 = lf1workfpay,
+    Section81 = hp1sec8pubsn,
+    Medicaid1 = ip1cmedicaid,
+    FoodAssist11 = ew1progneed1,
+    FoodAssist21 = ew1progneed2,
+    FoodAssist31 = ew1progneed3,
+    ChildhoodHealth1 = el1hlthchild,
+    RaceEthnicity1 = rl1dracehisp
+  ) |>
+  mutate(
+    
+# changing household size and income to numeric variables
+    HouseholdSize1 = case_when(
+      as.character(HouseholdSize1) %in% special_missing_levels ~ NA_real_,
+      TRUE ~ as.numeric(as.character(HouseholdSize1)) # Ensure conversion from potentially factor/character
+    ),
+    HouseholdIncome1 = case_when(
+      as.character(HouseholdIncome1) %in% special_missing_levels ~ NA_real_,
+      TRUE ~ as.numeric(as.character(HouseholdIncome1)) # Ensure conversion from potentially factor/character
+    ),
+  
+    
+# Simplifying occupation codes into 6 buckets 
+    Occupation1 = case_when(
+      Occupation1 %in% 1:11 ~ "1",       # Management / Professional
+      Occupation1 %in% 12:15 ~ "2",      # Service
+      Occupation1 %in% 16:17 ~ "3",      # Sales / Office
+      Occupation1 %in% 18:20 ~ "4",      # Construction / Farming
+      Occupation1 %in% 21:23 ~ "5",      # Production
+      EverWorked1 %in% c(2,3) ~ "6",     # Never worked / Homemaker
+      TRUE ~ NA_character_
+    ),
+    
+# Converting variables to labeled factors 
+    Responder1 = factor(Responder1, c("1","2"), c("Sample_Person","Proxy")),
+    Residential1 = factor(Residential1, c("1","2","3","4","5", special_missing_levels),
+                          c("Home/apartment","Retirement community","Assisted living","Nursing home","Other institution", special_missing_labels)),
+    Age1 = factor(Age1, c("1","2","3","4","5","6", special_missing_levels),
+                  c("65–69","70–74","75–79","80–84","85–89","90+", special_missing_labels)),
+    Gender1 = factor(Gender1, c("1","2"), c("Male","Female")),
+    Education1 = factor(Education1, c("1","2","3","4","5","6","7","8","9", special_missing_levels),
+                        c("No schooling","1–8th grade","9–12 (no diploma)","HS grad",
+                          "Vocational","Some college","Associate","Bachelor","Master/PhD", special_missing_labels)),
+    Occupation1 = factor(Occupation1, c("1","2","3","4","5","6"),
+                         c("Management/Professional","Service","Sales/Office",
+                           "Construction/Farming","Production","Homemaker")),
+    HomeOwnership1 = factor(HomeOwnership1, c("1","2","3", special_missing_levels),
+                            c("Own","Rent","Other", special_missing_labels)),
+    RetirementStatus1 = factor(RetirementStatus1, c("1","2","3", special_missing_levels),
+                               c("Yes","No","Retired", special_missing_labels)),
+    Section81 = factor(Section81, yes_no_levels, yes_no_labels),
+    Medicaid1 = factor(Medicaid1, yes_no_levels, yes_no_labels),
+    FoodAssist11 = factor(FoodAssist11, yes_no_levels, yes_no_labels),
+    FoodAssist21 = factor(FoodAssist21, yes_no_levels, yes_no_labels),
+    FoodAssist31 = factor(FoodAssist31, yes_no_levels, yes_no_labels),
+    ChildhoodHealth1 = factor(ChildhoodHealth1, c("1","2","3","4","5", special_missing_levels),
+                              c("Excellent","Very good","Good","Fair","Poor", special_missing_labels)),
+    RaceEthnicity1 = factor(RaceEthnicity1)
+  ) |>
+  
+  # Handling -1s "inapplicable" as "no" for Section 8 housing
+  mutate(Section81 = fct_recode(Section81, "No" = "Inapplicable"))
+```
+
+## 🧽 Cleaning Round 5 Data (R5)
+
+After cleaning up Round 1 (R1), I shifted my focus to **Round 5 (R5)**. This was the core dataset I relied on for the **covariates** used for analysis, since R5 represents a more current snapshot of the NHATS cohort of interest.  
+
+I used R1 mainly as a supplement — but R5 needed a **full clean** on its own first.  
+
+Here’s what I did for R5 (mirroring R1):  
+- **Imported** the Round 5 SP file.  
+- **Selected** the key variables that would ultimately serve as covariates in my analysis.  
+- **Filtered** the dataset to include only **sample-person respondents living at home** (just as I did for R1).  
+- **Renamed** variables for consistency and readability when merging across rounds.  
+- **Converted** household size and income into numeric format to handle NHATS’ special missing codes.  
+- **Collapsed** the occupation categories into simplified buckets and built out factors for categorical fields like education, marital status, and Section 8 status.  
+- Ensured everything was **factorized and labeled** consistently for later merging.
+- Converted **-1** *inapplicable* values from **Section 8 Housing** variable as *no* due to skip logic to reduce missing data for this variable. 
+
+
+
+``` {r}
+R5_SP <- read_sas("NHATS_Round_5_SP_File_v2.sas7bdat")
+
+
+R5_SP_clean <- R5_SP |>
+
+# Selecting the variables of interest
+  select(
+    spid, is5resptype, r5dresid, r5dcontnew, r5d2intvrage, r5dgender, el5higstschl,
+    lf5doccpctgy, lf5occupaton, hp5ownrentot, lf5workfpay, hp5sec8pubsn,
+    ip5cmedicaid, ew5progneed1, ew5progneed2, ew5progneed3, el5hlthchild,
+    hh5dmarstat, ia5totinc, hh5dhshldnum, fl5newsample, rl5dracehisp
+  ) |>
+  
+# Filtering to sample-person responders living at home
+  filter(is5resptype == 1 & r5dresid == 1) |>
+  
+# Renaming variables 
+  rename(
+    Responder5 = is5resptype,
+    Residential5 = r5dresid,
+    NewPerson = r5dcontnew,
+    Age = r5d2intvrage,
+    Gender = r5dgender,
+    Education = el5higstschl,
+    Occupation = lf5doccpctgy,
+    EverWorked = lf5occupaton,
+    HomeOwnership = hp5ownrentot,
+    HouseholdSize = hh5dhshldnum,
+    HouseholdIncome = ia5totinc,
+    RetirementStatus = lf5workfpay,
+    Section8 = hp5sec8pubsn,
+    Medicaid = ip5cmedicaid,
+    FoodAssist1 = ew5progneed1,
+    FoodAssist2 = ew5progneed2,
+    FoodAssist3 = ew5progneed3,
+    ChildhoodHealth = el5hlthchild,
+    MaritalStatus = hh5dmarstat,
+    Newsample = fl5newsample,
+    RaceEthnicity = rl5dracehisp
+  ) |>
+  mutate(
+    
+# changing household size and income to numeric variables
+    HouseholdSize = case_when(
+      as.character(HouseholdSize) %in% special_missing_levels ~ NA_real_,
+      TRUE ~ as.numeric(as.character(HouseholdSize))
+    ),
+    HouseholdIncome = case_when(
+      as.character(HouseholdIncome) %in% special_missing_levels ~ NA_real_,
+      TRUE ~ as.numeric(as.character(HouseholdIncome))
+    ),
+    
+# Simplifying occupation codes into 6 buckets 
+    Occupation = case_when(
+      Occupation %in% 1:11 ~ "1",
+      Occupation %in% 12:15 ~ "2",
+      Occupation %in% 16:17 ~ "3",
+      Occupation %in% 18:20 ~ "4",
+      Occupation %in% 21:23 ~ "5",
+      EverWorked %in% c(2,3) ~ "6",
+      Occupation == -1 ~ "7",
+      TRUE ~ NA_character_
+    ),
+    
+# Converting variables to labeled factors 
+    Responder5 = factor(Responder5, c("1","2"), c("Sample_Person","Proxy")),
+    Residential5 = factor(Residential5, c("1","2","3","4","5", special_missing_levels),
+                          c("Home/apartment","Retirement community","Assisted living","Nursing home","Other institution", special_missing_labels)),
+    NewPerson = factor(NewPerson, yes_no_levels, yes_no_labels),
+    Age = factor(Age, c("1","2","3","4","5","6", special_missing_levels),
+                 c("65–69","70–74","75–79","80–84","85–89","90+", special_missing_labels)),
+    Gender = factor(Gender, c("1","2"), c("Male","Female")),
+    Education = factor(Education, c("1","2","3","4","5","6","7","8","9", special_missing_levels),
+                       c("No schooling","1–8th grade","9–12 (no diploma)","HS grad",
+                         "Vocational","Some college","Associate","Bachelor","Master/PhD", special_missing_labels)),
+    Occupation = factor(Occupation, c("1","2","3","4","5","6","7"),
+                        c("Management/Professional","Service","Sales/Office","Construction/Farming","Production","Homemaker","Not working/retired")),
+    HomeOwnership = factor(HomeOwnership, c("1","2","3", special_missing_levels),
+                           c("Own","Rent","Other", special_missing_labels)),
+    RetirementStatus = factor(RetirementStatus, c("1","2","3", special_missing_levels),
+                              c("Yes","No","Retired", special_missing_labels)),
+    Section8 = factor(Section8, yes_no_levels, yes_no_labels),
+    Medicaid = factor(Medicaid, yes_no_levels, yes_no_labels),
+    FoodAssist1 = factor(FoodAssist1, yes_no_levels, yes_no_labels),
+    FoodAssist2 = factor(FoodAssist2, yes_no_levels, yes_no_labels),
+    FoodAssist3 = factor(FoodAssist3, yes_no_levels, yes_no_labels),
+    ChildhoodHealth = factor(ChildhoodHealth, c("1","2","3","4","5", special_missing_levels),
+                             c("Excellent","Very good","Good","Fair","Poor", special_missing_labels)),
+    MaritalStatus = factor(MaritalStatus, c("1","2","3","4","5","6", special_missing_levels),
+                           c("Married","Living with Partner","Separated","Divorced","Widowed","Never married", special_missing_labels)),
+    Newsample = factor(Newsample, yes_no_levels, yes_no_labels),
+    RaceEthnicity = factor(RaceEthnicity)
+  ) |>
+  
+  # Handling -1s "inapplicable" as "no" for Section 8 housing
+  mutate(Section8 = fct_recode(Section8, "No" = "Inapplicable"))
+``` 
+
+## 🔗 Merging Round 1 and Round 5 Data
+
+Once I had **cleaned both R1 and R5**, the next step was to **merge them together**.  
+Round 5 serves as the main covariate dataset, but I wanted to **pull in information from Round 1** to fill in any gaps where R5 data were missing or coded as one of NHATS’s special missing values (like `-1`, `-7`, `-8`, or `-9`).
+
+Here’s what I did:
+
+- I started by using the **cleaned versions** of both datasets: `R5_SP_clean` and `R1_SP_clean`.  
+- I used `left_join()` to **merge R1 into R5**, keeping **all Round 5 participants** (since R5 is my primary round for covariates).  
+- For each covariate, I told R to **use the R1 value only if R5’s value was marked as missing**.  
+- After filling from R1, I **standardized the missingness** across the merged dataset by collapsing all special missing codes into one `"Missing"` category for easier viewing.   
+- Finally, I **kept only the “_final” columns** so the dataset is clean and ready for the next step to integrate with R6 and R7 data.
+
+```{r}
+
+# Merge Round 5 with Round 1
+R5_merged <- R5_SP_clean |> 
+  left_join(R1_SP_clean, by = "spid") |> 
+  
+# Fill from R1 if R5 is special missing (-1, -7, -8, -9)
+  mutate(
+    Responder_final       = if_else(Responder5 %in% special_missing_labels, Responder1, Responder5),
+    Residential_final     = if_else(Residential5 %in% special_missing_labels, Residential1, Residential5),
+    Age_final             = if_else(Age %in% special_missing_labels, Age1, Age),
+    Gender_final          = if_else(Gender %in% special_missing_labels, Gender1, Gender),
+    Education_final       = if_else(Education %in% special_missing_labels, Education1, Education),
+    Occupation_final      = if_else(Occupation %in% special_missing_labels, Occupation1, Occupation),
+    HomeOwnership_final   = if_else(HomeOwnership %in% special_missing_labels, HomeOwnership1, HomeOwnership),
+    HouseholdSize_final   = if_else(HouseholdSize %in% special_missing_labels, HouseholdSize1, HouseholdSize),  
+    HouseholdIncome_final = if_else(HouseholdIncome %in% special_missing_labels, HouseholdIncome1, HouseholdIncome),
+    RetirementStatus_final = if_else(RetirementStatus %in% special_missing_labels, RetirementStatus1, RetirementStatus),
+    Section8_final        = if_else(Section8 %in% special_missing_labels, Section81, Section8),
+    Medicaid_final        = if_else(Medicaid %in% special_missing_labels, Medicaid1, Medicaid),
+    FoodAssist1_final     = if_else(FoodAssist1 %in% special_missing_labels, FoodAssist11, FoodAssist1),
+    FoodAssist2_final     = if_else(FoodAssist2 %in% special_missing_labels, FoodAssist21, FoodAssist2),
+    FoodAssist3_final     = if_else(FoodAssist3 %in% special_missing_labels, FoodAssist31, FoodAssist3),
+    ChildhoodHealth_final = if_else(ChildhoodHealth %in% special_missing_labels, ChildhoodHealth1, ChildhoodHealth),
+    RaceEthnicity_final   = if_else(RaceEthnicity %in% special_missing_labels, RaceEthnicity1, RaceEthnicity),
+    
+# Include Round 5 only variables
+    NewPerson_final       = NewPerson,
+    MaritalStatus_final   = MaritalStatus,
+    Newsample_final       = Newsample
+  )
+
+# Collapse missing levels consistently into one “Missing” level
+R5_merged <- R5_merged |> 
+  mutate(across(ends_with("_final"), safe_collapse, .names = "{.col}"))
+
+# Keep only final columns for downstream merges
+R5_merged <- R5_merged |> 
+  select(spid, ends_with("_final"))
+```
+
+## 🧰 Cleaning Round 6 Data (R6)
+
+After merging R1 and R5, I moved on to **Round 6 (R6)**.  
+This roundprovided the key **exposure variable** for my analysis: **Financial Strain**.
+
+Here’s how I approached cleaning R6:  
+
+- **Imported** the Round 6 SP file.  
+- **Selected** only the 4 variables related to **basic needs strain** (e.g., skipping meals, struggling to pay rent, utilities, or medical bills).  
+- **Filtered** the dataset to include only **sample-person respondents living at home**.  
+- **Renamed** the variables for clarity (e.g., `ew6mealskip1` became `SkippedMeals`).  
+- **Converted** these items into factors using the Yes/No coding already defined earlier with the helper functions.  
+- Built a new variable called **FinancialStrainFlag**:
+    - Marked participants as **“Any Strain”** if they answered *Yes* to **any** of the four items.
+    - Marked them as **“No Strain”** if they explicitly answered *No* to **all four** items.
+    - Then classified participants as **“Missing”** if there was any missing or inapplicable data in the absence of any single *Yes* to the four items.
+    
+```{r}
+R6_SP <- read_sas("NHATS_Round_6_SP_File_V2.sas7bdat")
+
+R6_SP_clean <- R6_SP |>
+  
+# Selecting the variables of interest
+  select(spid, is6resptype, r6dresid,
+         ew6mealskip1, ew6nopayhous, ew6nopayutil, ew6nopaymed) |>
+  
+#Filtering to sample-person responders living at home
+  filter(is6resptype == 1 & r6dresid == 1) |>
+
+# Renaming variables 
+  rename(
+    SkippedMeals = ew6mealskip1,
+    UnableToPayRent = ew6nopayhous,
+    UnableToPayUtilities = ew6nopayutil,
+    UnableToPayMedical = ew6nopaymed
+  ) |>
+  
+# Convert all 4 financial strain indicators into labeled factors at once
+  mutate(
+    across(c(SkippedMeals, UnableToPayRent, UnableToPayUtilities, UnableToPayMedical),
+           ~ factor(.x, yes_no_levels, yes_no_labels)),
+    
+# Creating new Financial Strain Flag variable
+    FinancialStrainFlag = case_when(
+      
+# If ANY of the four is YES, classify as Any Strain
+      SkippedMeals == "Yes" | UnableToPayRent == "Yes" |
+        UnableToPayUtilities == "Yes" | UnableToPayMedical == "Yes" ~ "Any Strain",
+      
+# If ALL FOUR are explicitly NO, classify as No Strain
+      SkippedMeals == "No" & UnableToPayRent == "No" &
+        UnableToPayUtilities == "No" & UnableToPayMedical == "No" ~ "No Strain",
+      
+# If we get here, at least one answer is missing/inapplicable/refused
+      TRUE ~ "Missing"
+    ) |> 
+  
+# Treat Financialstrainflag as a factor variable with three levls
+  factor(c("No Strain", "Any Strain", "Missing"))
+  )
+```
+
+## 🧴 Cleaning Round 7 Data (R7)
+
+Next, I turned to **Round 7 (R7)**, used to create the **dementia classification outcome** in the analysis.  
+
+R7 contained both:
+- A **clinician‑verified dementia diagnosis** field.
+- Multiple **cognitive test results** across three domains: memory, orientation, and executive function.
+
+Here’s what I did step by step:
+
+- **Imported** the R7 SP file and selected the variables I needed for cognition and dementia classification.  
+- **Filtered** the data to keep only participants **living at home**, since those are my analytic population. However, I allowed for proxy responders to account for individuals who may have developed dementia and were unable to answer since r6.  
+- **Renamed** variables so their purpose was clear (e.g., `cg7dwrdimmrc` became `MemoryImmediate`).  
+- **Calculated a memory score** by combining immediate and delayed recall scores (assigning 0 if a test result was missing).  
+- **Calculated an orientation score** by **re-codeing orientation items** (like date, president, and vice president questions) into correct/incorrect and then summarized the scores.   
+- **Flagged impairment in executive function** based on the clock‑draw task.  
+- Counted how many of the three domains (memory, orientation, executive) were impaired for each participant.  
+- **Created the final dementia classification (`dementia_class`)** using this logic:
+    - **Probable Dementia** if the NHATS clinician diagnosis confirmed dementia.
+    - **Possible Dementia** if there was no formal diagnosis but two or more domains were impaired.
+    - **No Dementia** if the diagnosis explicitly ruled it out *and* all domains were sufficiently intact no missing().
+    - **Missing** if **Probable Dementia** was not confirmed, and there was any missing data related to the memory, orientation score, or executive function domains. 
+
+```{r}
+R7_SP <- read_sas("NHATS_Round_7_SP_File.sas7bdat")
+
+R7_SP_clean <- R7_SP |>
+  
+# Select variables of interest
+  select(spid, is7resptype, r7dresid,
+         hc7disescn9, cg7dwrdimmrc, cg7dwrddlyrc,
+         cg7todaydat1, cg7todaydat2, cg7todaydat3, cg7todaydat4,
+         cg7presidna1, cg7presidna3, cg7vpname1, cg7vpname3,
+         cg7dclkdraw) |>
+  
+# Filter to only community dwelling respondents, but did not filter out proxy respondents this time. 
+  filter(r7dresid == 1) |>   
+  
+# Rename variables
+  rename(
+    DementiaDx = hc7disescn9,           # Clinician-verified dementia diagnosis
+    MemoryImmediate = cg7dwrdimmrc,     # Immediate recall
+    MemoryDelayed = cg7dwrddlyrc,       # Delayed recall
+    ExecutiveDraw = cg7dclkdraw         # Clock draw
+  ) |>
+
+  mutate(
+# Calculate 🧠 MEMORY SCORE: Immediate + Delayed Recall
+# If either is missing, we assign 0 points for that part (as NHATS coding convention).
+    memory_score = if_else(MemoryImmediate >= 0, MemoryImmediate, 0) +
+      if_else(MemoryDelayed >= 0, MemoryDelayed, 0),
+    memory_impaired = memory_score <= 3,  # Binary: <=3 points means impaired
+    
+# Calculate 🧭 ORIENTATION SCORE: Recode correct/incorrect items (1=correct, 2=incorrect)
+    across(c(cg7todaydat1, cg7todaydat2, cg7todaydat3, cg7todaydat4,
+             cg7presidna1, cg7presidna3, cg7vpname1, cg7vpname3),
+           ~ case_when(.x == 2 ~ 1,     # Incorrect = 1 point (impaired)
+                       .x == 1 ~ 0,     # Correct = 0 points
+                       TRUE ~ NA_real_), 
+           .names = "{.col}_rec"),
+    
+    orientation_score = rowSums(across(ends_with("_rec")), na.rm = TRUE),
+    orientation_impaired = orientation_score >= 5,   # ≥5 wrong answers = impaired
+    
+# Calculate 🕰 EXECUTIVE FUNCTION: Clock draw task
+    exec_impaired = ExecutiveDraw %in% c(0, 1),  # 0/1 scores indicate impairment
+    
+# 🏷 Count how many domains (memory/orientation/executive) are impaired
+    impaired_domains = rowSums(across(c(memory_impaired, orientation_impaired, exec_impaired)), 
+                               na.rm = TRUE),
+    
+#  Classify dementia 
+    dementia_class = case_when(
+      
+  # 1️⃣ **Probable Dementia**: If the NHATS clinician diagnosis says so, trust it
+      DementiaDx == 1 ~ "Probable Dementia",
+      
+  # 2️⃣ **Missing**: If DementiaDx is missing/refused/inapplicable (-1, -7, -8, -9)
+      DementiaDx %in% special_missing_numeric ~ "Missing",
+      
+  # 3️⃣ **Possible Dementia**: No formal diagnosis, but ≥2 impaired domains
+      DementiaDx != 1 & impaired_domains >= 2 ~ "Possible Dementia",
+      
+  # 4️⃣ **No Dementia**: Explicit diagnosis of “No dementia” and all three domains are fully observed (none missing) AND <2 impaired domains
+      DementiaDx == 2 & impaired_domains < 2 &
+        !is.na(memory_impaired) & !is.na(orientation_impaired) & !is.na(exec_impaired) ~ "No Dementia",
+      
+  # 5️⃣ **Missing**: Anything else (e.g., partial data, can’t confidently classify)
+      TRUE ~ "Missing"
+  
+  # Treat Dementia class as a factor variable with four levls
+    ) |> factor(c("No Dementia", "Possible Dementia", "Probable Dementia", "Missing"))
+  )
+```
+
+## 🏗 Final Merge: Combining All Rounds  
+
+With all four rounds cleaned, I moved on to **the final merge** step.  
+This was where I brought **everything together** into one unified dataset for analysis.
+
+Here’s what I did:  
+
+- **Started with Round 6 (R6)** as the base since it contained the **exposure variable** (Financial Strain).  
+- **Left‑joined** the merged R1/R5 dataset so I could bring in all of the covariates.  
+- **Left‑joined Round 7 (R7)** to add the **dementia classification outcome**.  
+- Saved that combined dataset as **FullData**, which keeps *everyone* from R6 — even participants with missing exposures or outcomes.  
+
+Then I created **CleanData**. This step was more than just removing missing values — it also filtered out people who couldn’t contribute to the analysis.  
+
+- I **filtered out anyone without usable exposure or outcome data**:
+    - If **FinancialStrainFlag** was coded as `"Missing"` or set to true missing (`NA`), they were removed.  
+    - If **dementia_class** was `"Missing"` or `NA`, they were removed too.  
+
+Importantly, this means that **participants without Round 7 data** (and therefore no dementia classification at all) were also excluded, since they wouldn’t meet the requirement of having a non-missing `dementia_class`.  
+
+This filtering step ensured that **CleanData only included participants with both**:
+- A valid **financial strain classification** from R6, and  
+- A valid **dementia classification** from R7.  
+
+```{r}
+
+# FullData keeps everyone from R6, even if FinancialStrainFlag or dementia_class = "Missing"
+FullData <- R6_SP_clean |>
+  left_join(R5_merged, by = "spid") |>
+  left_join(R7_SP_clean, by = "spid")
+
+# CleanData removes people missing either the exposure (FinancialStrainFlag) or outcome (dementia_class)
+CleanData <- FullData |>
+  filter(
+    !is.na(FinancialStrainFlag),       # drop rows that are NA (true missing)
+    !is.na(dementia_class),            # drop rows that are NA (true missing)
+    FinancialStrainFlag != "Missing",  # drop coded "Missing" exposures
+    dementia_class != "Missing"        # drop coded "Missing" outcomes
+  )
+```
+
+## 🔍 Inspecting Missingness in FullData and CleanData  
+
+Before doing any analysis, I skimmed both **FullData** and **CleanData** to understand the **pattern of missing values** and where they come from.
+
+---
+
+```{r}
+skim(FullData)
+```
+
+### **What I saw in FullData:**
+
+- **705 missing values for many Round 7 variables** (e.g., `dementia_class`, `MemoryImmediate`, `MemoryDelayed`):  
+  These are **people from Round 6 who never had a Round 7 interview at all** (not surveyed, not alive, or otherwise not present in R7).  
+  Because `R7_SP_clean` was **left-joined** to R6, those rows remain, but every R7 variable is `NA`.
+
+- **45 missing values for many R1/R5-derived covariates** (e.g., `Education_final`, `Occupation_final`):  
+  These are **participants in R6 who weren’t present in R1 or R5**.  
+  The `left_join()` kept them, but all R1/R5 variables stayed blank (`NA`).
+
+- **2,317 missing values for `HouseholdIncome_final`:**  *******************I NEED TO FIX THIS ***************************
+  This isn’t from missing interviews — it’s from **NHATS survey coding**.  
+  Some participants **refused to answer**, **didn’t know**, or **weren’t asked**, and those responses are collapsed to `NA`.
+
+- **FullData is designed this way** — it keeps *everyone* from Round 6 so nothing is lost prematurely, which means we expect a lot of **structural missingness** from other rounds.
+
+Now let's have a look at the "Cleandata" set
+
+```{r}
+skim(CleanData)
+```
+
+### **What I saw in CleanData:**
+
+- All participants missing the exposure (`FinancialStrainFlag`) or outcome (`dementia_class`) were removed.  
+  That’s why there are 0 missing for those two key variables here.
+
+- Only ~30 missing values remain for R1/R5-derived covariates:  
+  These are likely the same participants who had no data in R1 or R5.  
+  They stayed because they had R6 exposure and R7 outcome data, but we couldn’t backfill their covariates.
+
+- 22–29 missing values on the `_rec` cognition items (e.g., `cg7todaydat1_rec`):  
+  These are mostly due to item-level missingness in R7.  
+  Some respondents skipped or refused certain test items, and NHATS coded those as special missing values (e.g., `-7`, `-8`), which you collapsed to `NA`.
+
+- 1,885 missing for `HouseholdIncome_final`:  ********* I NEED TO FIX THIS *********************
+  Same story as in FullData — this is a survey artifact (refusals, “don’t know,” or skipped questions).
+
+- CleanData dramatically reduced missingness in the key analytic variables (exposure and outcome) but kept “real-world” missingness for some covariates and individual test items. This is expected in a complex survey merge and doesn’t need to be over-cleaned — it’s just important to explain.
+
+---
+
+## 📊 Building Table 1  
+
+To summarize the characteristics of my dataset, I created a **Table 1** for `Cleandata` using the `arsenal` package.  
+
+I wanted this table to compare participants by **Financial Strain Flag** across key demographic and health variables. Before building the table, I:  
+
+- **Labeled the variables** in `Cleandata` so the table would display readable column names instead of raw variable names.  
+- **Specified** which covariates should appear as factors (e.g., `Gender_final`, `Education_final`) and which should remain numeric (e.g., `HouseholdSize_final`, `HouseholdIncome_final`).  
+- **Chose summary statistics** for numeric variables — here I displayed the *median* and *standard deviation* rather than the mean, since income and household size are often skewed.  
+
+Finally, I ran `tableby()` to generate the table, and then used `summary()`
+
+```{r, results='asis'}
+
+## 📊 Building Table 1 with Arsenal (Hmisc Label Method)
+
+# Step 1: Assign pretty labels to all variables in CleanData
+label(CleanData$FinancialStrainFlag)    <- "Financial Strain Flag"
+label(CleanData$dementia_class)         <- "Dementia Classification"
+label(CleanData$Age_final)              <- "Age Group"
+label(CleanData$Gender_final)           <- "Gender"
+label(CleanData$Education_final)        <- "Education Level"
+label(CleanData$Occupation_final)       <- "Occupation Category"
+label(CleanData$HomeOwnership_final)    <- "Home Ownership"
+label(CleanData$HouseholdSize_final)    <- "Household Size"
+label(CleanData$HouseholdIncome_final)  <- "Household Income"
+label(CleanData$Section8_final)         <- "Receives Section 8"
+label(CleanData$Medicaid_final)         <- "Receives Medicaid"
+label(CleanData$ChildhoodHealth_final)  <- "Childhood Health Status"
+label(CleanData$RaceEthnicity_final)    <- "Race and Ethnicity"
+label(CleanData$MaritalStatus_final)    <- "Marital Status"
+
+# Step 2: Build Table 1 comparing participants by Financial Strain Flag
+tab1 <- tableby(
+  FinancialStrainFlag ~
+    dementia_class +
+    Age_final +
+    Gender_final +
+    Education_final +
+    Occupation_final +
+    HomeOwnership_final +
+    HouseholdSize_final +
+    HouseholdIncome_final +
+    Section8_final +
+    Medicaid_final +
+    ChildhoodHealth_final +
+    RaceEthnicity_final +
+    MaritalStatus_final,
+  data = CleanData,
+  numeric.stats = c("median", "sd")
+)
+
+# Step 3: Output summary (labels will now appear automatically)
+summary(tab1, text = TRUE)
+```
